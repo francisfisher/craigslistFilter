@@ -6,6 +6,8 @@ from lxml import html
 from datetime import datetime
 from random import shuffle
 from requests_html import HTMLSession
+from functools import partial
+import multiprocessing
 import sqlite3
 
 def runScraper():
@@ -91,142 +93,22 @@ def runScraper():
                 vehiclesList.append(vehicleDetails)
             print("{} entries tossed due to inadequate data".format(thrown))
             
+            #beginning multiprocessing
+            #pool = multiprocessing.Pool(processes=1)
+            #func = partial(scrapeUrl, session, carBrands, city)
+            #outputs = pool.map(func, vehiclesList)
+            #pool.close()
+            #pool.join()
+                       
             #loop through each vehicle
             for item in vehiclesList:
                 url = item[0]
-                
+                price = int(item[1].strip("$"))
                 #add the url to townUrls for database cleaning purposes
                 townUrls.add(url)
-                vehicleDict = {}
-                vehicleDict["price"] = int(item[1].strip("$"))
-                
-                #vehicle url is a primary key in this database so we cant have repeats. if a record with the same url is found, we continue
-                #the loop as the vehicle has already been stored
-                curs.execute("SELECT 1 FROM vehicles WHERE url ='{}'".format(url))
-                if curs.fetchall():
-                    continue
-                try:
-                    #grab each individual vehicle page
-                    page = session.get(url)
-                    tree = html.fromstring(page.content)
-                except:
-                    print("Failed to reach {}, entry has been dropped".format(url))
-                    continue
-                
-                attrs = tree.xpath('//span//b')
-                #this fetches a list of attributes about a given vehicle. each vehicle does not have every specific attribute listed on craigslist
-                #so this code gets a little messy as we need to handle errors if a car does not have the attribute we're looking for
-                for item in attrs:
-                    try:
-                        #make is the only attribute without a specific tag on craigslist, so if this code fails it means that we've grabbed the make of the vehicle
-                        k = item.getparent().text.strip()
-                        k = k.strip(":")
-                    except:
-                        k = "make"
-                    try:
-                        #this code fails if item=None so we have to handle it appropriately
-                        vehicleDict[k] = item.text.strip()
-                    except:
-                        continue
-                    
-                #we will assume that each of these variables are None until we hear otherwise
-                #that way, try/except clauses can simply pass and leave these values as None
-                price = None
-                year = None
-                manufacturer = None
-                make = None
-                condition = None
-                cylinders = None
-                fuel = None
-                odometer = None
-                title_status = None
-                transmission = None
-                VIN = None
-                drive = None
-                size = None
-                vehicle_type = None
-                paint_color = None
-                image_url = None
-                lat = None
-                long = None
-                
-                #now this code gets redundant. if we picked up a specific attr in the vehicleDict then we can change the variable from None.
-                #integer attributes (price/odometer) are handled in case the int() is unsuccessful, but i have never seen that be the case
-                if "price" in vehicleDict:
-                    try:
-                        price = int(vehicleDict["price"])
-                    except Exception as e:
-                        print("Could not parse price: {}".format(e))
-                if "odomoter" in vehicleDict:
-                    try:
-                        odometer = int(vehicleDict["odometer"])
-                    except Exception as e:
-                        print("Could not parse odometer: {}".format(e))
-                if "condition" in vehicleDict:
-                    condition = vehicleDict["condition"]
-                if "make" in vehicleDict:
-                    #make actually contains 3 variables that we'd like: year, manufacturer, and model (which we call make)
-                    try:
-                        year = int(vehicleDict["make"][:4])
-                        if year > nextYear:
-                            year = None
-                    except:
-                        year = None
-                    make = vehicleDict["make"][5:]
-                    foundManufacturer = False
-                    #we parse through each word in the description and search for a match with carBrands (at the top of the program)
-                    #if a match is found then we have our manufacturer, otherwise we set make to the entire string and leave manu blank
-                    for word in make.split():
-                        if word.lower() in carBrands:
-                            foundManufacturer = True
-                            make = ""
-                            manufacturer = word.lower()
-                            continue
-                        if foundManufacturer:
-                            make = make + word.lower() + " "
-                    make = make.strip()
-                if "cylinders" in vehicleDict:
-                    cylinders = vehicleDict["cylinders"]
-                if "fuel" in vehicleDict:
-                    fuel = vehicleDict["fuel"]
-                if "odometer" in vehicleDict:
-                    odometer = vehicleDict["odometer"]
-                if "title status" in vehicleDict:
-                    title_status = vehicleDict["title status"]    
-                if "transmission" in vehicleDict:
-                    transmission = vehicleDict["transmission"]
-                if "VIN" in vehicleDict:
-                    VIN = vehicleDict["VIN"]
-                if "drive" in vehicleDict:
-                    drive = vehicleDict["drive"]
-                if "size" in vehicleDict:
-                    size = vehicleDict["size"]
-                if "type" in vehicleDict:
-                    vehicle_type = vehicleDict["type"]
-                if "paint color" in vehicleDict:
-                    paint_color = vehicleDict["paint color"]
-                    
-                #now lets fetch the image url, latitude, and longitude if they exist
-                
-                try:
-                    img = tree.xpath('//div[@class="slide first visible"]//img')
-                    image_url = img[0].attrib["src"]
-                except:
-                    pass
-                
-                try:
-                    location = tree.xpath("//div[@id='map']")
-                    lat = float(location[0].attrib["data-latitude"])
-                    long = float(location[0].attrib["data-longitude"])
-                except:
-                    pass
-                
-                #finally we get to insert the entry into the database
-                curs.execute('''INSERT INTO vehicles(url, city, price, year, manufacturer, make, condition, cylinders, fuel, odometer, title_status, transmission, VIN, drive, size, type, 
-                paint_color, image_url, lat, long)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (url, city, price, year, manufacturer, make, condition, cylinders, fuel, odometer, title_status, transmission, VIN, drive, 
-                                                                     size, vehicle_type, paint_color, image_url, lat, long))
-                scraped += 1
+                successfulScrape = scrapeUrl(session, carBrands, city, curs, item)
+                if successfulScrape:
+                    scraped += 1
             #these lines will execute every time we grab a new page (after 120 entries)
             print("{} vehicles scraped".format(scraped))
             db.commit()
@@ -242,8 +124,146 @@ def runScraper():
                 deleted += 1
         print("Deleted {} old records".format(deleted))
     print("vehicles.db successfully updated, {} entries exist".format(curs.rowcount))
-    db.close()      
+    db.close()   
     
+def scrapeUrl(session, carBrands, city, curs, item):
+    #db = sqlite3.connect("cities.db")
+    #curs = db.cursor()    
+    url = item[0]
+    price = int(item[1].strip("$"))
+    vehicleDict = {}
+    vehicleDict["price"] = price
+        
+    #vehicle url is a primary key in this database so we cant have repeats. if a record with the same url is found, we continue
+    #the loop as the vehicle has already been stored
+    curs.execute("SELECT 1 FROM vehicles WHERE url ='{}'".format(url))
+    if curs.fetchall():
+        return
+    try:
+        #grab each individual vehicle page
+        page = session.get(url)
+        tree = html.fromstring(page.content)
+    except:
+        print("Failed to reach {}, entry has been dropped".format(url))
+        return
+    
+    attrs = tree.xpath('//span//b')
+    #this fetches a list of attributes about a given vehicle. each vehicle does not have every specific attribute listed on craigslist
+    #so this code gets a little messy as we need to handle errors if a car does not have the attribute we're looking for
+    for item in attrs:
+        try:
+            #make is the only attribute without a specific tag on craigslist, so if this code fails it means that we've grabbed the make of the vehicle
+            k = item.getparent().text.strip()
+            k = k.strip(":")
+        except:
+            k = "make"
+        try:
+            #this code fails if item=None so we have to handle it appropriately
+            vehicleDict[k] = item.text.strip()
+        except:
+            continue
+        
+    #we will assume that each of these variables are None until we hear otherwise
+    #that way, try/except clauses can simply pass and leave these values as None
+    price = None
+    year = None
+    manufacturer = None
+    make = None
+    condition = None
+    cylinders = None
+    fuel = None
+    odometer = None
+    title_status = None
+    transmission = None
+    VIN = None
+    drive = None
+    size = None
+    vehicle_type = None
+    paint_color = None
+    image_url = None
+    lat = None
+    long = None
+    
+    #now this code gets redundant. if we picked up a specific attr in the vehicleDict then we can change the variable from None.
+    #integer attributes (price/odometer) are handled in case the int() is unsuccessful, but i have never seen that be the case
+    if "price" in vehicleDict:
+        try:
+            price = int(vehicleDict["price"])
+        except Exception as e:
+            print("Could not parse price: {}".format(e))
+    if "odomoter" in vehicleDict:
+        try:
+            odometer = int(vehicleDict["odometer"])
+        except Exception as e:
+            print("Could not parse odometer: {}".format(e))
+    if "condition" in vehicleDict:
+        condition = vehicleDict["condition"]
+    if "make" in vehicleDict:
+        #make actually contains 3 variables that we'd like: year, manufacturer, and model (which we call make)
+        try:
+            year = int(vehicleDict["make"][:4])
+            if year > nextYear:
+                year = None
+        except:
+            year = None
+        make = vehicleDict["make"][5:]
+        foundManufacturer = False
+        #we parse through each word in the description and search for a match with carBrands (at the top of the program)
+        #if a match is found then we have our manufacturer, otherwise we set make to the entire string and leave manu blank
+        for word in make.split():
+            if word.lower() in carBrands:
+                foundManufacturer = True
+                make = ""
+                manufacturer = word.lower()
+                continue
+            if foundManufacturer:
+                make = make + word.lower() + " "
+        make = make.strip()
+    if "cylinders" in vehicleDict:
+        cylinders = vehicleDict["cylinders"]
+    if "fuel" in vehicleDict:
+        fuel = vehicleDict["fuel"]
+    if "odometer" in vehicleDict:
+        odometer = vehicleDict["odometer"]
+    if "title status" in vehicleDict:
+        title_status = vehicleDict["title status"]    
+    if "transmission" in vehicleDict:
+        transmission = vehicleDict["transmission"]
+    if "VIN" in vehicleDict:
+        VIN = vehicleDict["VIN"]
+    if "drive" in vehicleDict:
+        drive = vehicleDict["drive"]
+    if "size" in vehicleDict:
+        size = vehicleDict["size"]
+    if "type" in vehicleDict:
+        vehicle_type = vehicleDict["type"]
+    if "paint color" in vehicleDict:
+        paint_color = vehicleDict["paint color"]
+        
+    #now lets fetch the image url, latitude, and longitude if they exist
+    
+    try:
+        img = tree.xpath('//div[@class="slide first visible"]//img')
+        image_url = img[0].attrib["src"]
+    except:
+        pass
+    
+    try:
+        location = tree.xpath("//div[@id='map']")
+        lat = float(location[0].attrib["data-latitude"])
+        long = float(location[0].attrib["data-longitude"])
+    except:
+        pass
+    
+    #finally we get to insert the entry into the database
+    curs.execute('''INSERT INTO vehicles(url, city, price, year, manufacturer, make, condition, cylinders, fuel, odometer, title_status, transmission, VIN, drive, size, type, 
+    paint_color, image_url, lat, long)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (url, city, price, year, manufacturer, make, condition, cylinders, fuel, odometer, title_status, transmission, VIN, drive, 
+                                                         size, vehicle_type, paint_color, image_url, lat, long))
+    #db.close()
+    return 1
+
+
 def main():
     runScraper()
 
